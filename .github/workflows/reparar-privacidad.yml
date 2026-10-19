@@ -1,0 +1,72 @@
+name: Reparar HTML de privacidad
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency: reparar-privacidad
+
+jobs:
+  reparar:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+      - name: Decodificar una vez y verificar
+        shell: python {0}
+        run: |
+          import hashlib
+          import html
+          from html.parser import HTMLParser
+          from pathlib import Path
+
+          class PolicyParser(HTMLParser):
+              def __init__(self):
+                  super().__init__()
+                  self.h1_count = 0
+                  self.meta = {}
+
+              def handle_starttag(self, tag, attrs):
+                  attrs = dict(attrs)
+                  if tag == 'h1':
+                      self.h1_count += 1
+                  if tag == 'meta':
+                      name = attrs.get('name', '').lower()
+                      self.meta.setdefault(name, []).append(attrs.get('content', ''))
+
+          path = Path('index.html')
+          original = path.read_text(encoding='utf-8')
+          escaped_doctype = chr(38) + 'lt;!doctype html' + chr(38) + 'gt;'
+          escaped = original.lstrip().lower().startswith(escaped_doctype)
+          repaired = html.unescape(original) if escaped else original
+          expected = 'ed402eeb3e64262563a78cb254de603691af8c28f223bd7bf467060e6952033a'
+          assert hashlib.sha256(repaired.encode('utf-8')).hexdigest() == expected, 'Unexpected policy content; no file written'
+          assert repaired.lstrip().lower().startswith(chr(60) + '!doctype html' + chr(62)), 'Invalid HTML doctype'
+          parsed = PolicyParser()
+          parsed.feed(repaired)
+          parsed.close()
+          assert parsed.h1_count == 1, 'Expected one real h1'
+          assert parsed.meta.get('robots') == ['noindex, nofollow'], 'Missing robots privacy rule'
+          assert parsed.meta.get('referrer') == ['no-referrer'], 'Missing referrer privacy rule'
+          if escaped:
+              path.write_text(repaired, encoding='utf-8')
+              print('HTML decoded once and verified')
+          else:
+              print('HTML already correct; no changes')
+      - name: Guardar solo si hay cambios
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- index.html; then
+            echo 'No changes to commit'
+          else
+            git config user.name 'Recupera Carnet'
+            git config user.email '344530932+recuperacarnet-app@users.noreply.github.com'
+            git add -- index.html
+            git commit -m 'Fix escaped privacy policy HTML'
+            git push origin HEAD:main
+          fi
